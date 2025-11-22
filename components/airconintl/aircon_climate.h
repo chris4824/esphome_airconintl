@@ -47,6 +47,7 @@ namespace esphome
                 preset = climate::CLIMATE_PRESET_NONE;
                 current_temperature = 20.0f;
                 target_temperature = 22.0f;
+                last_valid_packet_time = 0;
             }
 
             void dump_config() override {};
@@ -103,6 +104,9 @@ namespace esphome
                     msg_size = get_response(read(), uart_buf);
                     if (msg_size > 0)
                     {
+                        // Mark packet as valid/fresh
+                        last_valid_packet_time = millis();
+
                         ESP_LOGD(
                             "aircon_climate",
                             "compf: %d compf_set: %d compf_snd: %d",
@@ -254,6 +258,34 @@ namespace esphome
                         }
 
                         send_state = IDLE;
+
+                        // UPDATE SENSORS ONLY ON VALID PACKET (FIX FOR NEGATIVES/ZEROS)
+                        auto *status = (Device_Status *)uart_buf;
+                        set_sensor(compressor_frequency, status->compressor_frequency);
+                        set_sensor(compressor_frequency_setting, status->compressor_frequency_setting);
+                        set_sensor(compressor_frequency_send, status->compressor_frequency_send);
+
+                        // Bounds-checked temp publishing (reject garbage like -127°C from noise)
+                        auto safe_temp_publish = [this](Sensor *s, int8_t raw) {
+                            if (s == nullptr) return;
+                            float value = (float)raw;
+                            if (raw < -50 || raw > 120) {  // Reasonable HVAC range: -50°C to 120°C
+                                ESP_LOGW("aircon_climate", "Invalid temp %d°C from packet, skipping", raw);
+                                return;
+                            }
+                            if (!s->has_state() || s->get_raw_state() != value)
+                                s->publish_state(value);
+                        };
+
+                        safe_temp_publish(outdoor_temperature, status->outdoor_temperature);
+                        safe_temp_publish(outdoor_condenser_temperature, status->outdoor_condenser_temperature);
+                        safe_temp_publish(compressor_exhaust_temperature, status->compressor_exhaust_temperature);
+                        safe_temp_publish(target_exhaust_temperature, status->target_exhaust_temperature);
+                        safe_temp_publish(indoor_pipe_temperature, status->indoor_pipe_temperature);
+
+                        set_sensor(indoor_humidity_setting, status->indoor_humidity_setting);
+                        set_sensor(indoor_humidity_status, status->indoor_humidity_status);
+
                         // Publish updated state to HA
                         this->publish_state();
                         // Clear any remaining bytes in UART buffer to avoid processing echoed sent messages
@@ -299,20 +331,11 @@ namespace esphome
 
             void update() override
             {
+                // Only publish climate state if we have fresh data (extra safety)
+                if (last_valid_packet_time > 0 && (millis() - last_valid_packet_time < 10000)) {
+                    this->publish_state();
+                }
                 request_update();
-
-                // Publish climate state and update sensors periodically
-                this->publish_state();
-                set_sensor(compressor_frequency, ((Device_Status *)uart_buf)->compressor_frequency);
-                set_sensor(compressor_frequency_setting, ((Device_Status *)uart_buf)->compressor_frequency_setting);
-                set_sensor(compressor_frequency_send, ((Device_Status *)uart_buf)->compressor_frequency_send);
-                set_sensor(outdoor_temperature, ((Device_Status *)uart_buf)->outdoor_temperature);
-                set_sensor(outdoor_condenser_temperature, ((Device_Status *)uart_buf)->outdoor_condenser_temperature);
-                set_sensor(compressor_exhaust_temperature, ((Device_Status *)uart_buf)->compressor_exhaust_temperature);
-                set_sensor(target_exhaust_temperature, ((Device_Status *)uart_buf)->target_exhaust_temperature);
-                set_sensor(indoor_pipe_temperature, ((Device_Status *)uart_buf)->indoor_pipe_temperature);
-                set_sensor(indoor_humidity_setting, ((Device_Status *)uart_buf)->indoor_humidity_setting);
-                set_sensor(indoor_humidity_status, ((Device_Status *)uart_buf)->indoor_humidity_status);
             }
 
             void control(const ClimateCall &call) override
@@ -330,72 +353,51 @@ namespace esphome
                         heat_tgt_temp = target_temperature;
                     }
 
-                    // User requested mode change
-                    ClimateMode md = *call.get_mode();
-
-                    if (md != climate::CLIMATE_MODE_OFF && this->mode == climate::CLIMATE_MODE_OFF)
+                    ClimateMode m = *call.get_mode();
+                    if (m == climate::CLIMATE_MODE_OFF)
                     {
                         std::vector<uint8_t> msg(on, on + sizeof(on));
-                        ESP_LOGD("aircon_climate", "Enqueuing Power On");
-                        send_message("Power On", msg);
-                    }
-
-                    switch (md)
-                    {
-                    case climate::CLIMATE_MODE_OFF:
-                    {
-                        std::vector<uint8_t> msg(off, off + sizeof(off));
                         ESP_LOGD("aircon_climate", "Enqueuing Power Off");
                         send_message("Power Off", msg);
-                        break;
                     }
-                    case climate::CLIMATE_MODE_COOL:
+                    else if (m == climate::CLIMATE_MODE_COOL)
                     {
                         std::vector<uint8_t> msg(mode_cool, mode_cool + sizeof(mode_cool));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Mode to Cool");
-                        send_message("Set Mode to Cool", msg);
-                        set_temp(cool_tgt_temp);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Cool Mode");
+                        send_message("Cool Mode", msg);
+                        if (cool_tgt_temp > 0) {
+                            target_temperature = cool_tgt_temp;
+                        }
                     }
-                    case climate::CLIMATE_MODE_HEAT:
+                    else if (m == climate::CLIMATE_MODE_HEAT)
                     {
                         std::vector<uint8_t> msg(mode_heat, mode_heat + sizeof(mode_heat));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Mode to Heat");
-                        send_message("Set Mode to Heat", msg);
-                        set_temp(heat_tgt_temp);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Heat Mode");
+                        send_message("Heat Mode", msg);
+                        if (heat_tgt_temp > 0) {
+                            target_temperature = heat_tgt_temp;
+                        }
                     }
-                    case climate::CLIMATE_MODE_FAN_ONLY:
+                    else if (m == climate::CLIMATE_MODE_FAN_ONLY)
                     {
                         std::vector<uint8_t> msg(mode_fan, mode_fan + sizeof(mode_fan));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Mode to Fan");
-                        send_message("Set Mode to Fan", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan Mode");
+                        send_message("Fan Mode", msg);
                     }
-                    case climate::CLIMATE_MODE_DRY:
+                    else if (m == climate::CLIMATE_MODE_DRY)
                     {
                         std::vector<uint8_t> msg(mode_dry, mode_dry + sizeof(mode_dry));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Mode to Dry");
-                        send_message("Set Mode to Dry", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Dry Mode");
+                        send_message("Dry Mode", msg);
                     }
-                    default:
-                        break;
-                    }
-
-                    // Publish updated state
-                    this->mode = md;
+                    mode = m;
                     this->publish_state();
                 }
 
                 if (call.get_target_temperature().has_value())
                 {
-                    // User requested target temperature change
                     float temp = *call.get_target_temperature();
-
                     set_temp(temp);
-
-                    // Send target temp to climate
                     target_temperature = temp;
                     this->publish_state();
                 }
@@ -403,45 +405,35 @@ namespace esphome
                 if (call.get_fan_mode().has_value())
                 {
                     ClimateFanMode fm = *call.get_fan_mode();
-                    switch (fm)
-                    {
-                    case climate::CLIMATE_FAN_AUTO:
+                    if (fm == climate::CLIMATE_FAN_AUTO)
                     {
                         std::vector<uint8_t> msg(speed_auto, speed_auto + sizeof(speed_auto));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Fan Speed to Auto");
-                        send_message("Set Fan Speed to Auto", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan Auto");
+                        send_message("Fan Auto", msg);
                     }
-                    case climate::CLIMATE_FAN_LOW:
+                    else if (fm == climate::CLIMATE_FAN_LOW)
                     {
                         std::vector<uint8_t> msg(speed_low, speed_low + sizeof(speed_low));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Fan Speed to Low");
-                        send_message("Set Fan Speed to Low", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan Low");
+                        send_message("Fan Low", msg);
                     }
-                    case climate::CLIMATE_FAN_MEDIUM:
+                    else if (fm == climate::CLIMATE_FAN_MEDIUM)
                     {
                         std::vector<uint8_t> msg(speed_med, speed_med + sizeof(speed_med));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Fan Speed to Medium");
-                        send_message("Set Fan Speed to Medium", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan Medium");
+                        send_message("Fan Medium", msg);
                     }
-                    case climate::CLIMATE_FAN_HIGH:
+                    else if (fm == climate::CLIMATE_FAN_HIGH)
                     {
                         std::vector<uint8_t> msg(speed_max, speed_max + sizeof(speed_max));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Fan Speed to High");
-                        send_message("Set Fan Speed to High", msg);
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan High");
+                        send_message("Fan High", msg);
                     }
-                    case climate::CLIMATE_FAN_QUIET:
+                    else if (fm == climate::CLIMATE_FAN_QUIET)
                     {
                         std::vector<uint8_t> msg(speed_mute, speed_mute + sizeof(speed_mute));
-                        ESP_LOGD("aircon_climate", "Enqueuing Set Fan Speed to Quiet");
-                        send_message("Set Fan Speed to Quiet", msg);
-                        break;
-                    }
-                    default:
-                        break;
+                        ESP_LOGD("aircon_climate", "Enqueuing Fan Quiet");
+                        send_message("Fan Quiet", msg);
                     }
                     fan_mode = fm;
                     this->publish_state();
@@ -450,7 +442,6 @@ namespace esphome
                 if (call.get_swing_mode().has_value())
                 {
                     ClimateSwingMode sm = *call.get_swing_mode();
-
                     if (sm == climate::CLIMATE_SWING_OFF)
                     {
                         std::vector<uint8_t> vert_msg(vert_dir, vert_dir + sizeof(vert_dir));
@@ -588,6 +579,7 @@ namespace esphome
             uint32_t last_send_time = 0;
             uint32_t last_read_time = 0;
             uint32_t idle_until = 0;
+            uint32_t last_valid_packet_time = 0;  // NEW: Track fresh packets
             std::string current_desc;
             std::queue<Message> message_queue;
             char desc_buffer[64];
