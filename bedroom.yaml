@@ -1,9 +1,24 @@
 esphome:
-  name: garage-ac
-  friendly_name: garage_ac
+  name: bedroom-ac
+  friendly_name: bedroom_ac
 
 external_components:
   - source: github://pslawinski/esphome_airconintl@packaging
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+ # With changes of 2025.2.0 adding lines below will allow build
+ #   version: 4.4.8
+ #   platform_version: 5.4.0
+
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_AUDIO_BOARD_CUSTOM: "y"
 
 uart:
   tx_pin: 1
@@ -13,7 +28,7 @@ uart:
 
 climate:
   - platform: airconintl
-    name: "Garage AC"
+    name: "Bedroom AC"
     temperature_unit: "F"
     re_pin: GPIO12
     de_pin: GPIO13
@@ -42,9 +57,6 @@ switch:
   - platform: restart
     name: "AC controller restart"
 
-esp8266:
-  board: esp01_1m
-
 # Enable logging
 logger:
   level: VERBOSE
@@ -53,17 +65,15 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: "1582jQcjZD+C7vt193Cq8MAnVHaQTZKp/PlPveW22Z0="
+    key: "xoYWZoh6ffxvcGP/Cg1IUzQJWby98RexhBt9PseT0Ms="
 
 ota:
   - platform: esphome
-    password: "4b75164a7040a860a6cb59266d9dcd9e"
+    password: "943fe7ce1f0303f89131c6d9578ef29d"
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  fast_connect: true
-  use_address: 10.0.0.51
+  ssid: !secret wifi_ssid_iot
+  password: !secret wifi_password_iot
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
