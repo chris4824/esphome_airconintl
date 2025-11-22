@@ -3,7 +3,7 @@ esphome:
   friendly_name: bedroom_ac
 
 external_components:
-  - source: github.com/chris4824/esphome_airconintl@packaging
+  - source: github://chris4824/esphome_airconintl@packaging
 
 esp32:
   board: esp32-s3-devkitc-1
