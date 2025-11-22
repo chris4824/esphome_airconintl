@@ -3,7 +3,9 @@ esphome:
   friendly_name: bedroom_ac
 
 external_components:
-  - source: github://chris4824/esphome_airconintl@packaging
+  - source:
+      type: local
+      path: /config/esphome/external_components
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -28,8 +30,8 @@ uart:
 
 climate:
   - platform: airconintl
+    id: bedroom_ac
     name: "Bedroom AC"
-    temperature_unit: "F"
     re_pin: GPIO12
     de_pin: GPIO13
     compressor_frequency:
@@ -48,10 +50,13 @@ climate:
       name: "Target Exhaust Temperature"
     indoor_pipe_temperature:
       name: "Indoor Evaporator Inlet Temperature"
-    humidity_setpoint:
-      name: "Indoor Humidity setting"
-    humidity_status:
-      name: "Indoor Humidity status"
+
+web_server:
+  port: 80
+  version: 3
+  local: true  # Embeds JS/CSS locally — fixes blank pages without internet
+  css_url: ""  # Disable external CSS
+  js_url: ""   # Disable external JS
 
 switch:
   - platform: restart
