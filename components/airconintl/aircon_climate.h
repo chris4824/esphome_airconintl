@@ -534,7 +534,7 @@ namespace esphome
             {
                 // The capabilities of the climate device
                 auto traits = climate::ClimateTraits();
-                traits.set_supports_current_temperature(esphome::climate::ClimateTraits::CURRENT_TEMPERATURE_SUPPORTS_EXTERNAL);
+                traits.add_feature_flags(esphome::climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
                 traits.set_visual_min_temperature(16);
                 traits.set_visual_max_temperature(32);
                 traits.set_visual_temperature_step(1);
